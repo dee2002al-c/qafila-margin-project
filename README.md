@@ -1,132 +1,105 @@
 # Qafila Gross Margin
 
-**Submitted by:** Deema Alharbi  
-**Academy:** @SDAIAAcademy
+Submitted by: Deema Alharbi — academy: @SDAIAAcademy
 
-This project implements a data engineering pipeline to calculate weekly gross margins from supplier price files and transactional order data. It includes data ingestion, transformation, SCD2 cost history, data quality validation, and Apache Iceberg table versioning.
+A pipeline that turns weekly supplier price files and the app database into a weekly gross-margin table that stays correct when files are re-processed or corrected. The task and rules are in [BRIEF.md](BRIEF.md).
 
-The project requirements are documented in [BRIEF.md](BRIEF.md).
-
-## How to Run
-
-Run the following commands from the project root directory:
+## How to run
 
 ```bash
 uv sync
-uv run python tools/make_data.py
-uv run python run.py
-uv run python tools/check.py
+uv run python tools/make_data.py              # data/
+uv run python run.py                          # data/ -> warehouse/ (DuckDB + Iceberg)
+uv run python tools/check.py                  # contract self-check
 ```
 
-To validate the pipeline using a different dataset:
+Second dataset and the late correction:
 
 ```bash
 uv run python tools/make_data.py --seed 11 --out data_11
 uv run python run.py --data-dir data_11 --warehouse warehouse_11
 uv run python tools/check.py --data-dir data_11 --warehouse warehouse_11
+
+uv run python tools/make_data.py --add-correction   # then run.py again
 ```
 
 ## Design
 
-**Pipeline architecture:**
+Supplier CSVs + SQLite → **raw** (Python + DuckDB) → **staging** (dbt views: parse, trim, Riyadh dates) → **silver** (dbt: checked prices, SCD2 history) → **gold** (dbt: weekly margin) → **Iceberg** (pyiceberg, updated in place).
 
-Supplier CSV files + SQLite order data → Python ingestion → DuckDB raw tables → dbt staging → SCD2 cost history (silver) → weekly margin (gold) → Apache Iceberg tables.
-
-| Model | Layer | Grain (one row per...) | Materialization |
+| Model | Layer | Grain (one row per…) | Built as |
 |---|---|---|---|
-| `stg_orders` | Staging | Order | DuckDB view |
-| `stg_order_items` | Staging | Order line | DuckDB view |
-| `stg_products` | Staging | Product | DuckDB view |
-| `stg_stores` | Staging | Store | DuckDB view |
-| `product_cost_history` | Silver | SKU and effective start date | Iceberg table |
-| `weekly_margin` | Gold | ISO week, city, and category | Iceberg table |
-| `price_quarantine` | Quality | Rejected supplier record | Iceberg table |
+| `raw.*` | raw | source row, plus `source_file` for supplier rows | DuckDB table (rebuilt each run) |
+| `stg_orders` | staging | order | view |
+| `stg_order_items` | staging | order line | view |
+| `stg_products` | staging | product | view |
+| `stg_stores` | staging | store | view |
+| `stg_supplier_prices` | staging | supplier file row | view |
+| `supplier_prices_checked` | silver | supplier file row, with a rejection `reason` | table |
+| `product_cost_history` | silver | SKU × cost version | table → Iceberg |
+| `price_quarantine` | quality | rejected supplier row | table → Iceberg |
+| `weekly_margin` | gold | iso_week × city × category | table → Iceberg |
 
-**How the SCD2 history is built:** Supplier prices are processed by SKU and effective date. Missing weekly prices retain the previous known cost, while unchanged prices do not create redundant versions. Late-arriving corrections update the applicable historical cost periods, maintaining continuous, non-overlapping validity intervals.
+**How the SCD2 history is built:** Rows are rejected first (`unknown_sku`, then `invalid_cost`) and ignored from then on. For the same SKU and `valid_from`, the row from the file whose name sorts last wins, so `prices_2026-W39_fix.csv` replaces `prices_2026-W39.csv`. A SKU missing from a weekly file has no row, so it keeps its previous cost; a new version starts only when the rounded cost differs from the previous one, and `valid_to` is the next version's `valid_from` (exclusive, empty for the current version).
 
-**How each order line finds its cost:** Eligible delivered order lines are matched to the supplier cost version valid on the Riyadh order date. The matching condition uses `valid_from` inclusively and `valid_to` exclusively. Lines without a valid cost remain included in revenue and are counted as uncosted.
+**How each order line finds its cost:** A delivered line (quantity > 0, Riyadh order date ≥ 2026-08-31) is joined to `product_cost_history` on the trimmed SKU where `valid_from <= order_date < valid_to` (open-ended for the current version). A line with no valid version stays in `lines` and `revenue_sar` and is counted in `uncosted_lines`.
 
-## Data Problems I Found
+## Data problems found
 
-| Problem | Where | Rows affected | What I did |
-|---|---|---|---|
-| Invalid or non-positive supplier costs | Supplier CSV files | Included in quarantine totals | Rejected invalid costs with reason `invalid_cost` |
-| Unknown product SKUs | Supplier CSV files | Included in quarantine totals | Rejected unmatched SKUs with reason `unknown_sku` |
-| Late supplier price correction | Week 39 correction file | Cost history increased from 633 to 637 rows | Incorporated corrected costs into the SCD2 history |
-| Missing weekly supplier prices | Supplier cost history | Not separately counted | Continued using the previously effective cost |
-| Unchanged supplier prices | Supplier cost history | Not separately counted | Avoided unnecessary duplicate cost versions |
+Counts are from the default dataset (`data/`).
 
-The additional Seed 11 dataset produced **7 quarantine records** across the supplier data quality checks.
+| Problem | Where | Rows | What I did |
+|---|---|---:|---|
+| Decimal comma (`9,49`) | W38 | 126 | converted to `9.49` |
+| Arabic-Indic digits and `٫` | W38 | 34 | translated to `0-9` and `.` |
+| Byte-order mark | W38 | 1 file | handled when reading the CSV |
+| Renamed column `unit_cost` → `cost_sar` | W39 | 1 file | cost = `coalesce(unit_cost, cost_sar)` |
+| Zero or negative cost | W39 | 4 | quarantined, `invalid_cost` |
+| SKU not sold by Qafila | W39 | 3 | quarantined, `unknown_sku` |
+| SKUs with trailing spaces | products | 2 | `trim` on both sides before comparing |
+| Late correction file | W39 fix | 9 rows | replaces the W39 rows with the same SKU and `valid_from` |
 
 ## Tests
 
-The pipeline was validated using dbt tests and the project's contract checking script.
+**dbt (20 tests, all passing):**
 
-| Test | On | What it protects against |
+| Test | On | Protects against |
 |---|---|---|
-| Unique business keys | Staging models | Duplicate source records |
-| Not-null constraints | Staging models | Missing required identifiers |
-| Referential integrity | Related staging models | Invalid source relationships |
-| SCD2 history checks | Cost history | Duplicate versions, gaps, and inconsistent validity periods |
-| Positive cost validation | Cost history | Invalid supplier costs |
-| Quarantine reason validation | Quality table | Unexpected rejection reasons |
-| Weekly margin consistency | Gold table | Incorrect margin relationships |
-| Source-to-output reconciliation | Weekly margin | Missing or duplicated eligible order lines |
-| Iceberg snapshot validation | Gold table | Missing historical table versions |
+| `unique`, `not_null` | `stg_products`, `stg_orders` | duplicate or missing keys |
+| `relationships` | `stg_order_items` → `stg_products` | order lines with an unknown product |
+| `not_null` | `product_cost_history`, `weekly_margin` | missing SKU, cost, dates, city, category |
+| `accepted_values` | `price_quarantine`, `supplier_prices_checked` | reasons other than `unknown_sku` / `invalid_cost` |
+| `assert_one_current_version_per_sku` | `product_cost_history` | zero or several current versions |
+| `assert_cost_versions_do_not_overlap` | `product_cost_history` | gaps, overlaps, repeated costs |
+| `assert_margin_adds_up` | `weekly_margin` | margin ≠ costed revenue − cost, or more uncosted lines than lines |
 
-**Validation results on Seed 11:**
+**Contract check (`tools/check.py`, 22/22 passed on both seeds):** table columns, SCD2 rules, one row per week × city × category, and that lines and revenue cover every eligible order line. It does not know the correct costs; the grader compares those on an unseen dataset.
 
-| Metric | Result |
-|---|---:|
-| Contract checks | 22/22 passed |
-| dbt tests | 20 passed |
-| Cost history rows | 632 |
-| Weekly margin rows | 165 |
-| Quarantine rows | 7 |
-| Eligible order-line reconciliation | Passed |
-| Revenue reconciliation | Passed |
+| Dataset | Cost history rows | Weekly margin rows | Quarantine rows |
+|---|---:|---:|---:|
+| default | 633 | 165 | 7 |
+| `--seed 11` | 632 | 165 | 7 |
 
-The contract checks validate table structure, SCD2 rules, data quality, margin consistency, and dbt test execution. Final grading may additionally compare costs and margins against expected results on an unseen dataset.
+## Re-runs and the correction
 
-## Re-runs and the Correction
+**Second run on the same data:** all three tables printed `unchanged` and no new Iceberg snapshot was written.
 
-The pipeline was executed multiple times to verify reproducibility, idempotency, and late-arriving supplier corrections.
+**After `--add-correction`:** history updated from 633 to 637 rows, `weekly_margin` was updated in place, quarantine was unchanged.
 
-**Unchanged rerun:** Running the pipeline again without changing the input data preserved the business results.
+`gold.weekly_margin` snapshots (total `margin_sar` read from each snapshot):
 
-**Week 39 correction:** Processing the late supplier correction updated the historical cost records and affected the calculated gross margin.
+| Snapshot | Snapshot ID | Parent | Total margin (SAR) |
+|---|---|---|---:|
+| 1 — before the correction | `9198720270857319979` | none | 801,016.88 |
+| 2 — empty step of the overwrite (delete, then append) | `540874720911920821` | `9198720270857319979` | 0.00 |
+| 3 — after the correction | `8287781665223861300` | `540874720911920821` | 803,515.80 |
 
-| Metric | Before correction | After correction |
-|---|---:|---:|
-| SCD2 cost history rows | 633 | 637 |
-| Total margin (SAR) | 801,016.88 | 803,515.80 |
+The older snapshot still shows the numbers from before the correction (801,016.88), while the current table shows 803,515.80, a difference of SAR 2,498.92.
 
-The total margin changed by **SAR 2,498.92** after processing the correction.
+## What would break first
 
-**Apache Iceberg snapshots:**
+With 100× more data, the full rebuild of every table (dbt `table`, DuckDB reload of all files, full Iceberg overwrite) would break first. I would move to incremental models, load only new files, and use an Iceberg merge instead of an overwrite. With daily supplier files, the point-in-time join and the SCD2 would need to be incremental, and quarantine volume and late corrections would need monitoring.
 
-The `gold.weekly_margin` table retained the following three snapshots:
+## AI assistance
 
-| Snapshot | Snapshot ID | Parent Snapshot ID |
-|---|---|---|
-| Snapshot 1 | `9198720270857319979` | None |
-| Snapshot 2 | `540874720911920821` | `9198720270857319979` |
-| Snapshot 3 | `8287781665223861300` | `540874720911920821` |
-
-The snapshot relationships confirm that successive versions were preserved in Apache Iceberg. Earlier versions remain available for historical inspection.
-
-The before-and-after margin values above were recorded during pipeline execution; the individual snapshot contents were not separately reconciled to those totals.
-
-**Additional dataset:** The pipeline was also executed with Seed 11 and passed all **22/22 contract checks**, including **20 dbt tests**.
-
-## What I'd Do Next
-
-With 100 times more data, full-table processing and large joins could become performance bottlenecks. I would introduce incremental processing, partition pruning, optimized joins, and automated monitoring.
-
-With daily supplier files, I would strengthen effective-date validation, late-arrival handling, and correction processing. I would also monitor quarantine volumes, data freshness, and unexpected changes in weekly margins.
-
-## AI Assistance
-
-AI assistance was used to understand project requirements, troubleshoot local execution issues, review Python and SQL logic, explain SCD2 and point-in-time cost matching, and help prepare project documentation.
-
-The pipeline was executed and validated locally using the project-provided tools and checks.
+I used Claude (Anthropic) to plan the layers, write the first version of `run.py` and the dbt models, and draft this README. I ran the pipeline, checked the results with `tools/check.py` on two datasets, and reviewed the code.
