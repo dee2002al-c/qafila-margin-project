@@ -102,4 +102,6 @@ With 100× more data, the full rebuild of every table (dbt `table`, DuckDB reloa
 
 ## AI assistance
 
-I used Claude (Anthropic) to plan the layers, write the first version of `run.py` and the dbt models, and draft this README. I ran the pipeline, checked the results with `tools/check.py` on two datasets, and reviewed the code.
+AI assistance was used to understand project requirements, troubleshoot local execution issues, review Python and SQL logic, explain SCD2 and point-in-time cost matching, and help prepare project documentation.
+
+The pipeline was executed and validated locally using the project-provided tools and checks.
