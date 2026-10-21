@@ -10,14 +10,24 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 from pyiceberg.catalog.sql import SqlCatalog
 
 DBT_DIR = Path(__file__).resolve().parent / "dbt"
+OLTP_TABLES = ["orders", "order_items", "products", "stores"]
+# Iceberg table -> sort order (a stable row order keeps re-runs comparable)
+PUBLISHED = {
+    "silver.product_cost_history": "sku, valid_from",
+    "gold.weekly_margin": "iso_week, city, category",
+    "quality.price_quarantine": "source_file, sku, valid_from, raw_cost",
+}
 
 
 def get_catalog(warehouse: Path) -> SqlCatalog:
@@ -32,11 +42,29 @@ def ingest(data_dir: Path, db: Path) -> None:
     - From data_dir/qafila_oltp.sqlite: orders, order_items, products, stores.
     - Every data_dir/suppliers/prices_*.csv, keeping the file name of each row.
 
-    Running this twice must not duplicate anything.
+    Running this twice must not duplicate anything: every table is rebuilt from the files.
     """
     with duckdb.connect(str(db)) as con:  # closes the file before dbt opens it
         con.sql("CREATE SCHEMA IF NOT EXISTS raw")
-        raise NotImplementedError("Step 1: load the sources into the raw schema")
+
+        with closing(sqlite3.connect(data_dir / "qafila_oltp.sqlite")) as src:
+            for table in OLTP_TABLES:
+                rows = pd.read_sql_query(f"SELECT * FROM {table}", src)  # noqa: S608 (fixed list)
+                con.register("_rows", rows)
+                con.sql(f"CREATE OR REPLACE TABLE raw.{table} AS SELECT * FROM _rows")
+                con.unregister("_rows")
+
+        # Supplier files change shape (renamed column, extra columns, BOM): read everything as text,
+        # align columns by name, and let staging do the parsing.
+        pattern = (data_dir / "suppliers" / "prices_*.csv").as_posix()
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE raw.supplier_prices AS
+            SELECT * EXCLUDE (filename), parse_filename(filename) AS source_file
+            FROM read_csv(?, all_varchar = true, union_by_name = true, filename = true)
+            """,
+            [pattern],
+        )
 
 
 def transform(db: Path) -> None:
@@ -60,7 +88,23 @@ def publish(db: Path, warehouse: Path) -> None:
     how we see what a number was before the supplier's correction arrived.
     """
     catalog = get_catalog(warehouse)
-    raise NotImplementedError("Step 5: publish the models to Iceberg")
+    with duckdb.connect(str(db), read_only=True) as con:
+        for name, order_by in PUBLISHED.items():
+            schema, table = name.split(".")
+            new = con.sql(f"SELECT * FROM {name} ORDER BY {order_by}").to_arrow_table()  # noqa: S608
+            catalog.create_namespace_if_not_exists(schema)
+            if not catalog.table_exists(name):
+                catalog.create_table(name, schema=new.schema).append(new)
+                print(f"{name}: created ({new.num_rows} rows)")
+                continue
+            iceberg = catalog.load_table(name)
+            current = iceberg.scan().to_arrow().select(new.schema.names).sort_by(
+                [(c, "ascending") for c in new.schema.names])
+            if current.cast(new.schema).equals(new.sort_by([(c, "ascending") for c in new.schema.names])):
+                print(f"{name}: unchanged")  # no new snapshot on a re-run
+                continue
+            iceberg.overwrite(new)  # new snapshot; the old one stays readable
+            print(f"{name}: updated ({new.num_rows} rows)")
 
 
 def main() -> None:
