@@ -1,6 +1,6 @@
 # Qafila gross margin
 
-Submitted by: <your name> — academy: @SDAIAAcademy
+Submitted by: Deema Alharbi — academy: @SDAIAAcademy
 
 The task, rules and grading are in [BRIEF.md](BRIEF.md).
 
