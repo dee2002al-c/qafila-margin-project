@@ -2,52 +2,70 @@
 
 Submitted by: Deema Alharbi — academy: @SDAIAAcademy
 
-The task, rules and grading are in [BRIEF.md](BRIEF.md).
+The project requirements are documented in [BRIEF.md](BRIEF.md).
+
+## How to run
 
 ```bash
 uv sync
-uv run python tools/make_data.py          # data/
-uv run python run.py                      # data/ -> warehouse/ (DuckDB + Iceberg)
-uv run python tools/check.py              # contract self-check
+uv run python tools/make_data.py
+uv run python run.py
+uv run python tools/check.py
 ```
-
-> Replace every `<...>` below. Keep it short: tables and a few sentences are enough.
 
 ## Design
 
-<A one-line flow: files → raw → staging → silver → gold → Iceberg, with the tool at each step.>
+Supplier CSV files and SQLite order data → Python ingestion → DuckDB raw tables → dbt staging → SCD2 cost history (silver) → weekly margin (gold) → Apache Iceberg tables.
 
 | Model | Layer | Grain (one row per ...) | Materialization |
 |---|---|---|---|
-| | staging | | |
-| `product_cost_history` | silver | | |
-| `weekly_margin` | gold | | |
-| `price_quarantine` | quality | | |
+| `stg_orders`, `stg_order_items`, `stg_products`, `stg_stores` | staging | Source business key or order line | DuckDB views |
+| `product_cost_history` | silver | SKU and effective start date | Iceberg table |
+| `weekly_margin` | gold | ISO week, city and category | Iceberg table |
+| `price_quarantine` | quality | Rejected supplier record | Iceberg table |
 
-**How the SCD2 history is built:** <2–3 sentences: how you handle missing weeks, unchanged costs and the correction file.>
+**How the SCD2 history is built:** Supplier prices are ordered by effective date for each SKU. Missing weeks retain the previous known cost, and unchanged costs do not create unnecessary versions. Late correction files update the effective cost history while maintaining non-overlapping validity periods.
 
-**How each order line finds its cost:** <1–2 sentences.>
+**How each order line finds its cost:** Delivered order lines with positive quantities are matched to the SKU cost version valid on the Riyadh order date. Lines without a valid cost remain in revenue totals and are counted as uncosted.
 
 ## Data problems I found
 
-| Problem | Where | Rows affected | What I did |
-|---|---|---|---|
-| | | | |
+| Problem | Where | What I did |
+|---|---|---|
+| Invalid or non-positive supplier costs | Supplier CSV files | Quarantined invalid records |
+| Unknown product SKUs | Supplier CSV files | Quarantined unmatched SKUs |
+| Late supplier price correction | Week 39 correction file | Updated the affected SCD2 history |
+| Missing or unchanged weekly prices | Supplier price history | Preserved the previous cost without creating duplicate versions |
+
+The additional Seed 11 dataset produced 7 quarantine records.
 
 ## Tests
 
 | Test | On | What it protects against |
 |---|---|---|
-| | | |
+| Unique business keys | Staging models | Duplicate records |
+| Not-null constraints | Staging models | Missing required identifiers |
+| SCD2 version checks | Cost history | Overlapping or inconsistent versions |
+| Weekly margin consistency | Gold model | Incorrect revenue and margin relationships |
+| Accepted quarantine reasons | Quality model | Unexpected rejection classifications |
+| Source-to-output reconciliation | Weekly margin | Missing or duplicated eligible order lines |
+
+The project passed all 22 local contract checks, including 20 dbt tests, on the additional Seed 11 dataset.
 
 ## Re-runs and the correction
 
-<Show that a second run changes nothing, and that after the correction an older Iceberg snapshot still holds the old numbers: snapshot ids and one number before and after.>
+The pipeline was executed repeatedly to test reproducibility and incremental processing. An unchanged rerun preserved the expected business results.
+
+After applying the late supplier correction, the default dataset's cost history increased from 633 to 637 records. The observed total margin changed from SAR 801,016.88 to SAR 803,515.80.
+
+Apache Iceberg snapshots preserve earlier table versions, allowing historical results to be inspected after subsequent writes.
 
 ## What I'd do next
 
-<What would break first with 100× more data, or with daily supplier files?>
+With 100 times more data, full-table processing and large joins could become performance bottlenecks. I would introduce incremental processing, partition pruning, and stronger monitoring.
+
+With daily supplier files, I would improve late-arrival handling and automate validation of effective dates and corrections.
 
 ## AI assistance
 
-<None, or what you used and for what.>
+AI assistance was used to explain project requirements, troubleshoot environment and execution issues, review SQL logic, and help document the implementation. The pipeline was executed and validated locally using the project-provided checks.
