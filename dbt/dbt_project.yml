@@ -20,3 +20,7 @@ models:
     quality:
       +schema: quality
       +materialized: table
+
+vars:
+  # First supplier week: orders before this date have no supplier price to compare with.
+  margin_start_date: "2026-08-31"

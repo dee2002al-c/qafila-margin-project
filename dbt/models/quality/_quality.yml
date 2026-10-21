@@ -1,0 +1,9 @@
+version: 2
+models:
+  - name: price_quarantine
+    columns:
+      - name: reason
+        tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: ['unknown_sku', 'invalid_cost'], quote: true}

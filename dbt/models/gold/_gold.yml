@@ -1,0 +1,10 @@
+version: 2
+models:
+  - name: weekly_margin
+    columns:
+      - name: lines
+        tests: [not_null]
+      - name: city
+        tests: [not_null]
+      - name: category
+        tests: [not_null]

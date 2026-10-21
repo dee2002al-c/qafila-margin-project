@@ -1,0 +1,16 @@
+version: 2
+models:
+  - name: product_cost_history
+    columns:
+      - name: sku
+        tests: [not_null]
+      - name: unit_cost_sar
+        tests: [not_null]
+      - name: valid_from
+        tests: [not_null]
+  - name: supplier_prices_checked
+    columns:
+      - name: reason
+        tests:
+          - accepted_values:
+              arguments: {values: ['unknown_sku', 'invalid_cost'], quote: true}
