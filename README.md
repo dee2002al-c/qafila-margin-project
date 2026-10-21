@@ -1,6 +1,6 @@
 # Qafila Gross Margin
 
-Submitted by: Deema Alharbi — academy: @SDAIAAcademy SDAIA Academy GitHub.
+Submitted by: Deema Alharbi — academy: @SDAIAAcademy [SDAIA Academy GitHub](https://github.com/SDAIAAcademy)
 
 A pipeline that turns weekly supplier price files and the app database into a weekly gross-margin table that stays correct when files are re-processed or corrected. The task and rules are in [BRIEF.md](BRIEF.md).
 
