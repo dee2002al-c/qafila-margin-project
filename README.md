@@ -4,6 +4,7 @@ Submitted by: Deema Alharbi — academy: @SDAIAAcademy
 
 The project requirements are documented in [BRIEF.md](BRIEF.md).
 
+
 ## How to run
 
 ```bash
@@ -52,7 +53,7 @@ The additional Seed 11 dataset produced 7 quarantine records.
 
 The project passed all 22 local contract checks, including 20 dbt tests, on the additional Seed 11 dataset.
 
-Re-runs and the correction
+## Re-runs and the correction
 
 The pipeline was executed multiple times to verify reproducibility, idempotency, and late-arriving supplier corrections.
 
@@ -62,21 +63,12 @@ After applying the Week 39 supplier correction, the cost history increased from 
 
 Apache Iceberg preserved three snapshots of the gold.weekly_margin table:
 
-Snapshot
 
-Snapshot ID
-
-Initial snapshot
-
-9198720270857319979
-
-Second snapshot
-
-540874720911920821
-
-Third snapshot
-
-8287781665223861300
+| Snapshot | Snapshot ID |
+|---|---|
+| Initial snapshot | `9198720270857319979` |
+| Second snapshot | `540874720911920821` |
+| Third snapshot | `8287781665223861300` |
 
 The snapshot parent relationships confirm that each new snapshot follows the previous version. Earlier snapshots remain available for historical inspection after subsequent updates.
 
