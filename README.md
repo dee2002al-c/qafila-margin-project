@@ -4,23 +4,32 @@ Submitted by: Deema Alharbi — academy: @SDAIAAcademy [SDAIA Academy GitHub](ht
 
 A pipeline that turns weekly supplier price files and the app database into a weekly gross-margin table that stays correct when files are re-processed or corrected. The task and rules are in [BRIEF.md](BRIEF.md).
 
+
 ## How to run
+
+Run from the project root:
 
 ```bash
 uv sync
-uv run python tools/make_data.py              # data/
-uv run python run.py                          # data/ -> warehouse/ (DuckDB + Iceberg)
-uv run python tools/check.py                  # contract self-check
+uv run python tools/make_data.py
+uv run python run.py
+uv run python tools/check.py
 ```
 
-Second dataset and the late correction:
+Test on a second dataset:
 
 ```bash
 uv run python tools/make_data.py --seed 11 --out data_11
 uv run python run.py --data-dir data_11 --warehouse warehouse_11
 uv run python tools/check.py --data-dir data_11 --warehouse warehouse_11
+```
 
-uv run python tools/make_data.py --add-correction   # then run.py again
+Apply the late correction to the default dataset:
+
+```bash
+uv run python tools/make_data.py --add-correction
+uv run python run.py
+uv run python tools/check.py
 ```
 
 ## Design
