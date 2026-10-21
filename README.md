@@ -52,14 +52,35 @@ The additional Seed 11 dataset produced 7 quarantine records.
 
 The project passed all 22 local contract checks, including 20 dbt tests, on the additional Seed 11 dataset.
 
-## Re-runs and the correction
+Re-runs and the correction
 
-The pipeline was executed repeatedly to test reproducibility and incremental processing. An unchanged rerun preserved the expected business results.
+The pipeline was executed multiple times to verify reproducibility, idempotency, and late-arriving supplier corrections.
 
-After applying the late supplier correction, the default dataset's cost history increased from 633 to 637 records. The observed total margin changed from SAR 801,016.88 to SAR 803,515.80.
+Running the pipeline again without changing the input data preserved the business results.
 
-Apache Iceberg snapshots preserve earlier table versions, allowing historical results to be inspected after subsequent writes.
+After applying the Week 39 supplier correction, the cost history increased from 633 to 637 records. The observed total margin changed from SAR 801,016.88 to SAR 803,515.80, reflecting the corrected historical supplier costs.
 
+Apache Iceberg preserved three snapshots of the gold.weekly_margin table:
+
+Snapshot
+
+Snapshot ID
+
+Initial snapshot
+
+9198720270857319979
+
+Second snapshot
+
+540874720911920821
+
+Third snapshot
+
+8287781665223861300
+
+The snapshot parent relationships confirm that each new snapshot follows the previous version. Earlier snapshots remain available for historical inspection after subsequent updates.
+
+The pipeline was also tested using a separate dataset generated with Seed 11, passing 22/22 contract checks, including 20 dbt tests.
 ## What I'd do next
 
 With 100 times more data, full-table processing and large joins could become performance bottlenecks. I would introduce incremental processing, partition pruning, and stronger monitoring.
